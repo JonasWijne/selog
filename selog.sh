@@ -69,7 +69,7 @@ generate_confluence_log() {
       IFS=',' read -r -a ticket_array <<<"$ticket_list"
       for ticket in "${ticket_array[@]}"; do
         ticket=$(echo "$ticket" | xargs) # Trim whitespace
-        local ticket_url="https://studioemma.atlassian.net/browse/$ticket"
+        local ticket_url="${TICKET_URL_BASE}/$ticket"
         if [[ -n "$tickets" ]]; then
           tickets+=" , "
         fi
@@ -87,6 +87,37 @@ selog() {
   # Initialize variables
   major_version=""
   hash=""
+  auto_accept_version=false
+
+  # Configuration paths
+  CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+  SELOG_CONFIG_DIR="$CONFIG_HOME/selog"
+  REPOS_DIR="$SELOG_CONFIG_DIR/repos"
+  ticket_url_file="$SELOG_CONFIG_DIR/ticket_url.conf"
+
+  # Ensure the config directories exist
+  mkdir -p "$REPOS_DIR"
+
+  # Check if the ticket URL configuration file exists
+  if [ -f "$ticket_url_file" ]; then
+    # Read the ticket URL base from the configuration file
+    TICKET_URL_BASE=$(cat "$ticket_url_file")
+  else
+    # Configuration file does not exist
+    echo "No ticket URL configuration found."
+    echo "Enter the base URL for tickets (e.g., https://example.atlassian.net/browse):"
+    read -r TICKET_URL_BASE
+
+    if [ -z "$TICKET_URL_BASE" ]; then
+      echo "Ticket URL base is required."
+      exit 1
+    fi
+
+    # Save the URL to the configuration file
+    echo "$TICKET_URL_BASE" >"$ticket_url_file"
+  fi
+
+  echo "Ticket URL base is set to: $TICKET_URL_BASE"
 
   # Function to display help message
   show_help() {
@@ -97,6 +128,7 @@ selog() {
     echo
     echo "Options:"
     echo "  -v, --version <version>    Specify the major version number."
+    echo "  -y                         Automatically accept the detected version without prompting."
     echo "  --help                     Display this help message and exit."
     echo
     echo "Arguments:"
@@ -112,6 +144,7 @@ selog() {
     echo "Examples:"
     echo "  selog --version 1.2        Use major version 1.2 and select starting hash interactively."
     echo "  selog abc1234              Generate log from commit abc1234 with auto-detected version."
+    echo "  selog -y                   Automatically accept the detected version."
     echo "  selog --help               Display this help message and exit."
   }
 
@@ -124,6 +157,9 @@ selog() {
     -v | --version)
       shift
       major_version="$1"
+      ;;
+    -y)
+      auto_accept_version=true
       ;;
     --help)
       show_help
@@ -199,21 +235,23 @@ selog() {
     fi
   fi
 
-  # Prompt the user to confirm or change the major version
-  echo "Current major version is ${major_version}. Is this correct? (y/n, Enter for yes): "
-  read -r confirm
-  if [ "$confirm" != "y" ] && [ "$confirm" != "" ]; then
-    echo "Enter the correct major version: "
-    read -r major_version
+  # Prompt the user to confirm or change the major version if auto_accept_version is not set
+  if [ "$auto_accept_version" = false ]; then
+    echo "Current major version is ${major_version}. Is this correct? (y/n, Enter for yes): "
+    read -r confirm
+    if [ "$confirm" != "y" ] && [ "$confirm" != "" ]; then
+      echo "Enter the correct major version: "
+      read -r major_version
 
-    if [ -z "$major_version" ]; then
-      echo "Major version is required."
-      exit 1
+      if [ -z "$major_version" ]; then
+        echo "Major version is required."
+        exit 1
+      fi
     fi
   fi
 
   # Get today's date in YYYYMMDD format
-  date_str=$(date +%Y%m%d)
+  date_str=$(date +'%Y%m%d')
 
   # Construct the version string
   version="${major_version}.${date_str}.1"
@@ -243,15 +281,10 @@ selog() {
   rm "$tmpfile"
 
   # Ask if the user wants to open the release notes
-  echo "Do you want to open the release notes in your browser? (y/n, Enter for yes): "
+  echo "Do you want to open the release notes in your browser? (y/n, Enter for no): "
   read -r open_releasenotes
-  if [ "$open_releasenotes" = "y" ] || [ "$open_releasenotes" = "" ]; then
+  if [ "$open_releasenotes" = "y" ] || [ "$open_releasenotes" = "Y" ]; then
     # Determine the release notes URL
-    CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-    SELOG_CONFIG_DIR="$CONFIG_HOME/selog"
-
-    # Ensure the config directory exists
-    mkdir -p "$SELOG_CONFIG_DIR"
 
     # Get the repository URL
     repo_url=$(git config --get remote.origin.url)
@@ -260,7 +293,7 @@ selog() {
     repo_hash=$(echo -n "$repo_url" | sha256sum | cut -d ' ' -f1)
 
     # Configuration file path
-    config_file="$SELOG_CONFIG_DIR/$repo_hash.conf"
+    config_file="$REPOS_DIR/$repo_hash.conf"
 
     # Check if the configuration file exists
     if [ -f "$config_file" ]; then
@@ -269,9 +302,9 @@ selog() {
     else
       # Configuration file does not exist
       echo "No configuration found for this repository."
-      echo "Would you like to add one? (y/n): "
+      echo "Would you like to add one? (y/n, Enter for yes): "
       read -r add_config
-      if [ "$add_config" = "y" ] || [ "$add_config" = "Y" ]; then
+      if [ "$add_config" = "y" ] || [ "$add_config" = "Y" ] || [ "$add_config" = "" ]; then
         echo "Enter the URL to open for release notes:"
         read -r release_notes_url
 
@@ -282,6 +315,24 @@ selog() {
         # User does not want to add configuration
         echo "No URL configured. Cannot open release notes."
         release_notes_url=""
+      fi
+    fi
+
+    # Check if the ticket URL configuration file exists
+    if [ -f "$ticket_url_file" ]; then
+      # Read the ticket URL base from the configuration file
+      TICKET_URL_BASE=$(cat "$ticket_url_file")
+    else
+      # Configuration file does not exist
+      echo "No ticket URL configuration found."
+      echo "Would you like to add one? (y/n, Enter for yes): "
+      read -r add_ticket_url_config
+      if [ "$add_ticket_url_config" = "y" ] || [ "$add_ticket_url_config" = "Y" ] || [ "$add_ticket_url_config" = "" ]; then
+        echo "Enter the base URL for tickets (e.g., https://example.atlassian.net/browse):"
+        read -r TICKET_URL_BASE
+
+        # Save the URL to the configuration file
+        echo "$TICKET_URL_BASE" >"$ticket_url_file"
       fi
     fi
 
